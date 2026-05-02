@@ -374,8 +374,8 @@ document.getElementById('startBtn').addEventListener('click',startQuiz);
 
 // ── 資料回傳到 Google Sheets ──────────────────────────────
 var APPS_SCRIPT_URL='https://script.google.com/macros/s/AKfycbwHzkVOquZvCYZsvVn3PUtwOACShy2mybrG_JrAf4mKoBdOKiqm9IYqw3XXnn2KP3Ld/exec';
-var _pendingPayload=null;  // 暫存，等 CTA 點擊或離頁再送
-var _sent=false;           // 避免重複送出
+var _quizData=null;   // 暫存測驗資料，還沒決定 cta_clicked
+var _hasSent=false;   // 只送一次
 
 function getDevice(){
   var ua=navigator.userAgent;
@@ -387,64 +387,64 @@ function getDevice(){
   return'其他';
 }
 
-function buildPayload(ctaClicked,location){
-  var params=new URLSearchParams(window.location.search);
-  return{
-    name:'',email:'',
-    result_role:DATA[currentResult].name,
-    utm_source:params.get('utm_source')||'直接進入',
-    utm_campaign:params.get('utm_campaign')||'',
-    cta_clicked:ctaClicked,
-    score_a:scores.A,score_e:scores.E,score_s:scores.S,score_c:scores.C,
-    device:getDevice(),
-    location:location||''
-  };
-}
-
-function doSend(payload){
-  if(_sent)return;
-  _sent=true;
-  navigator.sendBeacon
-    ? navigator.sendBeacon(APPS_SCRIPT_URL,JSON.stringify(payload))
-    : fetch(APPS_SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(payload)}).catch(function(){});
+function postToSheets(payload){
+  // 用 keepalive 讓離頁後還能送完
+  fetch(APPS_SCRIPT_URL,{
+    method:'POST',
+    headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify(payload),
+    keepalive:true
+  }).catch(function(){});
 }
 
 function sendResultToSheets(role){
-  // 取得地理位置（非強制，使用者拒絕就跳過）
+  _hasSent=false;
+  var params=new URLSearchParams(window.location.search);
+  var base={
+    result_role:DATA[currentResult].name,
+    utm_source:params.get('utm_source')||'直接進入',
+    utm_campaign:params.get('utm_campaign')||'',
+    score_a:scores.A,score_e:scores.E,score_s:scores.S,score_c:scores.C,
+    device:getDevice(),
+    location:''
+  };
+  // 先存基本資料，等位置回來再補
+  _quizData=Object.assign({},base);
+
+  // 非同步抓位置，只更新 _quizData，不送出
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
       function(pos){
-        // 用免費 API 反查城市
         fetch('https://nominatim.openstreetmap.org/reverse?lat='+pos.coords.latitude+'&lon='+pos.coords.longitude+'&format=json')
           .then(function(r){return r.json()})
           .then(function(d){
-            var loc=(d.address.city||d.address.town||d.address.county||'')+(d.address.country?', '+d.address.country:'');
-            _pendingPayload=buildPayload(false,loc);
-          })
-          .catch(function(){_pendingPayload=buildPayload(false,'');});
+            if(_quizData&&!_hasSent){
+              _quizData.location=(d.address.city||d.address.town||d.address.county||'')+(d.address.country?', '+d.address.country:'');
+            }
+          }).catch(function(){});
       },
-      function(){_pendingPayload=buildPayload(false,'');}, // 拒絕授權
+      function(){}, // 拒絕授權，location 維持空字串
       {timeout:5000}
     );
-  } else {
-    _pendingPayload=buildPayload(false,'');
   }
 }
 
 function trackCtaClick(){
-  _sent=false; // 重置讓 CTA 版本可以送出
-  var payload=buildPayload(true, _pendingPayload?_pendingPayload.location:'');
-  doSend(payload);
-  _pendingPayload=null; // CTA 已送，不需再送離頁版本
+  if(_hasSent||!_quizData)return;
+  _hasSent=true;
+  _quizData.cta_clicked=true;
+  postToSheets(_quizData);
 }
 
-// 離開頁面時送出（沒點 CTA 的用戶）
-window.addEventListener('pagehide',function(){
-  if(_pendingPayload&&!_sent)doSend(_pendingPayload);
-});
-window.addEventListener('beforeunload',function(){
-  if(_pendingPayload&&!_sent)doSend(_pendingPayload);
-});
+// 離開頁面才送出（沒點 CTA 的用戶）
+function sendOnLeave(){
+  if(_hasSent||!_quizData)return;
+  _hasSent=true;
+  _quizData.cta_clicked=false;
+  postToSheets(_quizData);
+}
+window.addEventListener('pagehide',sendOnLeave);
+window.addEventListener('beforeunload',sendOnLeave);
 // ─────────────────────────────────────────────────────────
 </script>
 </body>
