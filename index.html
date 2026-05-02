@@ -374,8 +374,10 @@ document.getElementById('startBtn').addEventListener('click',startQuiz);
 
 // ── 資料回傳到 Google Sheets ──────────────────────────────
 var APPS_SCRIPT_URL='https://script.google.com/macros/s/AKfycbwHzkVOquZvCYZsvVn3PUtwOACShy2mybrG_JrAf4mKoBdOKiqm9IYqw3XXnn2KP3Ld/exec';
-var _quizData=null;   // 暫存測驗資料，還沒決定 cta_clicked
-var _hasSent=false;   // 只送一次
+var _quizData=null;
+var _hasSent=false;
+var _ctaClicked=false;
+var _autoSendTimer=null;
 
 function getDevice(){
   var ua=navigator.userAgent;
@@ -388,7 +390,6 @@ function getDevice(){
 }
 
 function postToSheets(payload){
-  // 用 keepalive 讓離頁後還能送完
   fetch(APPS_SCRIPT_URL,{
     method:'POST',
     headers:{'Content-Type':'text/plain'},
@@ -399,8 +400,10 @@ function postToSheets(payload){
 
 function sendResultToSheets(role){
   _hasSent=false;
+  _ctaClicked=false;
+  clearTimeout(_autoSendTimer);
   var params=new URLSearchParams(window.location.search);
-  var base={
+  _quizData={
     result_role:DATA[currentResult].name,
     utm_source:params.get('utm_source')||'直接進入',
     utm_campaign:params.get('utm_campaign')||'',
@@ -408,41 +411,49 @@ function sendResultToSheets(role){
     device:getDevice(),
     location:''
   };
-  // 先存基本資料，等位置回來再補
-  _quizData=Object.assign({},base);
 
-  // 非同步抓位置，只更新 _quizData，不送出
-  if(navigator.geolocation){
-    navigator.geolocation.getCurrentPosition(
-      function(pos){
-        fetch('https://nominatim.openstreetmap.org/reverse?lat='+pos.coords.latitude+'&lon='+pos.coords.longitude+'&format=json')
-          .then(function(r){return r.json()})
-          .then(function(d){
-            if(_quizData&&!_hasSent){
-              _quizData.location=(d.address.city||d.address.town||d.address.county||'')+(d.address.country?', '+d.address.country:'');
-            }
-          }).catch(function(){});
-      },
-      function(){}, // 拒絕授權，location 維持空字串
-      {timeout:5000}
-    );
-  }
+  // IP 定位：完全背景靜默，不跳授權視窗
+  fetch('https://ipapi.co/json/')
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(_quizData&&!_hasSent){
+        _quizData.location=(d.city||'')+(d.country_name?', '+d.country_name:'');
+      }
+    }).catch(function(){});
+
+  // 30 秒後自動送出，解決 Line WebView 不觸發離頁事件的問題
+  _autoSendTimer=setTimeout(function(){
+    if(!_hasSent&&_quizData){
+      _hasSent=true;
+      _quizData.cta_clicked=_ctaClicked;
+      postToSheets(_quizData);
+    }
+  },30000);
 }
 
 function trackCtaClick(){
-  if(_hasSent||!_quizData)return;
-  _hasSent=true;
-  _quizData.cta_clicked=true;
-  postToSheets(_quizData);
+  _ctaClicked=true;
+  if(!_hasSent&&_quizData){
+    _hasSent=true;
+    clearTimeout(_autoSendTimer);
+    _quizData.cta_clicked=true;
+    postToSheets(_quizData);
+  }
 }
 
-// 離開頁面才送出（沒點 CTA 的用戶）
 function sendOnLeave(){
-  if(_hasSent||!_quizData)return;
-  _hasSent=true;
-  _quizData.cta_clicked=false;
-  postToSheets(_quizData);
+  if(!_hasSent&&_quizData){
+    _hasSent=true;
+    clearTimeout(_autoSendTimer);
+    _quizData.cta_clicked=_ctaClicked;
+    postToSheets(_quizData);
+  }
 }
+
+// 涵蓋 Line / FB WebView / 一般瀏覽器所有離頁方式
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='hidden')sendOnLeave();
+});
 window.addEventListener('pagehide',sendOnLeave);
 window.addEventListener('beforeunload',sendOnLeave);
 // ─────────────────────────────────────────────────────────
