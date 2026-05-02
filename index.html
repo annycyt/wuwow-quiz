@@ -412,14 +412,24 @@ function sendResultToSheets(role){
     location:''
   };
 
-  // IP 定位：完全背景靜默，不跳授權視窗
-  fetch('https://ipapi.co/json/')
+  // IP 定位：主要用 ip-api.com，失敗則備援 ipapi.co
+  fetch('http://ip-api.com/json/?lang=zh-TW&fields=city,regionName,country')
     .then(function(r){return r.json()})
     .then(function(d){
       if(_quizData&&!_hasSent){
-        _quizData.location=(d.city||'')+(d.country_name?', '+d.country_name:'');
+        _quizData.location=(d.city||d.regionName||'')+(d.country?', '+d.country:'');
       }
-    }).catch(function(){});
+    })
+    .catch(function(){
+      // 備援
+      fetch('https://ipapi.co/json/')
+        .then(function(r){return r.json()})
+        .then(function(d){
+          if(_quizData&&!_hasSent){
+            _quizData.location=(d.city||'')+(d.country_name?', '+d.country_name:'');
+          }
+        }).catch(function(){});
+    });
 
   // 30 秒後自動送出，解決 Line WebView 不觸發離頁事件的問題
   _autoSendTimer=setTimeout(function(){
