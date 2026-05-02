@@ -409,58 +409,67 @@ function sendResultToSheets(role){
     utm_campaign:params.get('utm_campaign')||'',
     score_a:scores.A,score_e:scores.E,score_s:scores.S,score_c:scores.C,
     device:getDevice(),
-    location:''
+    location:'',
+    cta_clicked:false
   };
 
-  // IP 定位：主要用 ip-api.com，失敗則備援 ipapi.co
+  // IP 定位：背景抓，抓到後立刻送出
   fetch('http://ip-api.com/json/?lang=zh-TW&fields=city,regionName,country')
     .then(function(r){return r.json()})
     .then(function(d){
-      if(_quizData&&!_hasSent){
-        _quizData.location=(d.city||d.regionName||'')+(d.country?', '+d.country:'');
-      }
+      _quizData.location=(d.city||d.regionName||'')+(d.country?', '+d.country:'');
     })
     .catch(function(){
-      // 備援
-      fetch('https://ipapi.co/json/')
+      return fetch('https://ipapi.co/json/')
         .then(function(r){return r.json()})
         .then(function(d){
-          if(_quizData&&!_hasSent){
-            _quizData.location=(d.city||'')+(d.country_name?', '+d.country_name:'');
-          }
-        }).catch(function(){});
+          _quizData.location=(d.city||'')+(d.country_name?', '+d.country_name:'');
+        });
+    })
+    .finally(function(){
+      // 定位完成後立刻送出（不管成功或失敗）
+      if(!_hasSent&&_quizData){
+        _hasSent=true;
+        postToSheets(_quizData);
+      }
     });
 
-  // 30 秒後自動送出，解決 Line WebView 不觸發離頁事件的問題
+  // 備援：若定位 API 3 秒沒回應，直接送出（不等位置）
   _autoSendTimer=setTimeout(function(){
     if(!_hasSent&&_quizData){
       _hasSent=true;
-      _quizData.cta_clicked=_ctaClicked;
       postToSheets(_quizData);
     }
-  },30000);
+  },3000);
 }
 
 function trackCtaClick(){
   _ctaClicked=true;
   if(!_hasSent&&_quizData){
+    // timer 還沒到，提前送出
     _hasSent=true;
     clearTimeout(_autoSendTimer);
     _quizData.cta_clicked=true;
     postToSheets(_quizData);
+  } else if(_hasSent&&_quizData){
+    // timer 已經送出過（cta_clicked=否），補送一筆更新
+    var update=Object.assign({},_quizData);
+    update.cta_clicked=true;
+    update._update=true; // 標記這是更新
+    postToSheets(update);
   }
 }
 
 function sendOnLeave(){
+  // 備援：主送出已完成就跳過
   if(!_hasSent&&_quizData){
     _hasSent=true;
-    clearTimeout(_autoSendTimer);
     _quizData.cta_clicked=_ctaClicked;
     postToSheets(_quizData);
   }
 }
 
-// 涵蓋 Line / FB WebView / 一般瀏覽器所有離頁方式
+// 離頁備援（一般瀏覽器）
 document.addEventListener('visibilitychange',function(){
   if(document.visibilityState==='hidden')sendOnLeave();
 });
